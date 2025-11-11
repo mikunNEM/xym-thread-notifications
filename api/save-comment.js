@@ -3,12 +3,10 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANO
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).end();
-  const { hash, owner_pubkey, title } = req.body;
-  await supabase.from('threads').upsert({
-    hash: hash.substring(0, 5),
-    full_hash: hash,
-    owner_pubkey,
-    title
+  const { thread_hash, sender_pubkey } = req.body;
+  await supabase.from('thread_comments').upsert({
+    thread_hash,
+    sender_pubkey
   });
   res.status(200).json({ ok: true });
 };
