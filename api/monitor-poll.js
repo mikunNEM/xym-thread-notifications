@@ -5,6 +5,14 @@ const supabase = require('@supabase/supabase-js').createClient(
 );
 
 module.exports = async (req, res) => {
+
+  // CORSヘッダー
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  
   const NODE = await getAvailableNode();
   if (!NODE) return res.status(500).json({ error: 'Node unavailable' });
 
