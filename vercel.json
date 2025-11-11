@@ -3,11 +3,6 @@
     "api/**/*.js": {
       "runtime": "nodejs18.x"
     }
-  },
-  "crons": [
-    {
-      "path": "/api/monitor-poll",
-      "schedule": "*/5 * * * *"
-    }
-  ]
+  }
+  
 }
