@@ -1,8 +1,9 @@
 // api/line-register.js
-const { createClient } = require('@supabase/supabase-js');
+import { createClient } from '@supabase/supabase-js';
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -20,7 +21,6 @@ module.exports = async (req, res) => {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LINE通知登録 - XYM Thread</title>
-  <!-- QRコードライブラリ（headで先読み込み） -->
   <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.0/build/qrcode.min.js"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
@@ -49,15 +49,11 @@ module.exports = async (req, res) => {
   </div>
 
   <script>
-    // ライブラリ読み込み後にQR生成
     window.addEventListener('load', () => {
       const canvas = document.getElementById('qrcode');
-      if (!canvas) return;
-
       const liffUrl = 'https://miniapp.line.me/${LIFF_ID}';
       QRCode.toCanvas(canvas, liffUrl, {
-        width: 220,
-        margin: 2,
+        width: 220, margin: 2,
         color: { dark: '#00B900', light: '#ffffff' }
       }).catch(err => {
         console.error('QR生成エラー:', err);
@@ -65,14 +61,11 @@ module.exports = async (req, res) => {
       });
     });
 
-    // LIFF初期化
     liff.init({ liffId: '${LIFF_ID}' })
       .then(async () => {
         const statusEl = document.getElementById('status');
         const pubkeyInput = document.getElementById('pubkeyInput');
         const pubkeyField = document.getElementById('pubkeyField');
-
-        // URLから公開鍵取得
         const urlParams = new URLSearchParams(window.location.search);
         const urlPubkey = urlParams.get('pubkey');
 
@@ -91,29 +84,26 @@ module.exports = async (req, res) => {
         const userId = context.userId;
         statusEl.innerHTML = 'User ID取得完了！';
 
-        // 公開鍵チェック
         let pubkey = urlPubkey;
         if (!pubkey || pubkey.length !== 64 || !/^[0-9A-Fa-f]{64}$/.test(pubkey)) {
           pubkeyInput.style.display = 'block';
           statusEl.innerHTML = '公開鍵を入力してください（64文字）';
           pubkeyField.focus();
           pubkeyField.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') register(pubkeyField.value.trim());
+            if (e.key === 'Enter') register(pubkeyField.value.trim(), userId);
           });
           return;
         }
 
-        // 自動登録
-        await register(pubkey);
+        await register(pubkey, userId);
       })
       .catch(err => {
         console.error('LIFFエラー:', err);
-        document.getElementById('status').innerHTML = 
+        document.getElementById('status').innerHTML =
           '<span class="error">LIFFエラー: ' + (err.message || '初期化失敗') + '</span>';
       });
 
-    // 登録関数
-    async function register(pubkey) {
+    async function register(pubkey, userId) {
       const statusEl = document.getElementById('status');
       if (!pubkey || pubkey.length !== 64 || !/^[0-9A-Fa-f]{64}$/.test(pubkey)) {
         statusEl.innerHTML = '<span class="error">無効な公開鍵です</span>';
@@ -125,7 +115,7 @@ module.exports = async (req, res) => {
         const response = await fetch('https://xym-thread-notifications.vercel.app/api/save-user', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pubkey, line_user_id: liff.getContext().userId })
+          body: JSON.stringify({ pubkey, line_user_id: userId })
         });
         const data = await response.json();
 
@@ -145,4 +135,4 @@ module.exports = async (req, res) => {
   `;
 
   res.status(200).send(html);
-};
+}

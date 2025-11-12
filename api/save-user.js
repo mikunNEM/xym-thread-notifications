@@ -1,17 +1,16 @@
 // api/save-user.js
-const { createClient } = require('@supabase/supabase-js');
+import { createClient } from '@supabase/supabase-js';
 
-// Vercel Serverless Functions 用：module.exports に変更！
-module.exports = async (req, res) => {
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+
+export default async function handler(req, res) {
   // CORSヘッダー
   res.setHeader('Access-Control-Allow-Origin', 'https://xym-thread.com');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // OPTIONS（プリフライトリクエスト）対応
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  // OPTIONS（プリフライトリクエスト）
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
   // POST以外は拒否
   if (req.method !== 'POST') {
@@ -19,20 +18,14 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const { pubkey, line_user_id } = req.body;
+    const { pubkey, line_user_id } = await req.json?.() || req.body;
 
     // 必須項目チェック
     if (!pubkey || !line_user_id) {
       return res.status(400).json({ error: 'pubkey and line_user_id required' });
     }
 
-    // Supabaseクライアント作成
-    const supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY
-    );
-
-    // 接続テスト（任意だが安全）
+    // Supabase接続テスト
     const { error: testError } = await supabase
       .from('user_notifications')
       .select('pubkey')
@@ -40,13 +33,13 @@ module.exports = async (req, res) => {
 
     if (testError) {
       console.error('Supabase connection error:', testError);
-      return res.status(500).json({ 
-        error: 'Supabase connection failed', 
-        details: testError.message 
+      return res.status(500).json({
+        error: 'Supabase connection failed',
+        details: testError.message
       });
     }
 
-    // 登録（pubkey で上書き）
+    // 登録（pubkey重複時は上書き）
     const { error } = await supabase
       .from('user_notifications')
       .upsert(
@@ -56,9 +49,9 @@ module.exports = async (req, res) => {
 
     if (error) {
       console.error('Upsert error:', error);
-      return res.status(500).json({ 
-        error: 'DB insert failed', 
-        details: error.message 
+      return res.status(500).json({
+        error: 'DB insert failed',
+        details: error.message
       });
     }
 
@@ -66,9 +59,9 @@ module.exports = async (req, res) => {
     res.status(200).json({ success: true });
   } catch (err) {
     console.error('Unexpected error:', err);
-    res.status(500).json({ 
-      error: 'Server error', 
-      details: err.message 
+    res.status(500).json({
+      error: 'Server error',
+      details: err.message
     });
   }
-};
+}

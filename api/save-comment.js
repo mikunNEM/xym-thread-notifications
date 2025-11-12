@@ -1,23 +1,31 @@
-// api/save-comment.js
-const { createClient } = require('@supabase/supabase-js');
+// api/save-comment.js (ESM対応)
+import { createClient } from '@supabase/supabase-js';
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-module.exports = async (req, res) => {
-  // CORSヘッダー
-  res.setHeader('Access-Control-Allow-Origin', 'https://xym-thread.com');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  if (req.method !== 'POST') return res.status(405).end();
+  try {
+    const { thread_hash, sender_pubkey } = await req.json?.() || req.body;
+    if (!thread_hash || !sender_pubkey) {
+      return res.status(400).json({ error: 'Missing fields' });
+    }
 
-  const { thread_hash, sender_pubkey } = req.body;
+    // コメント登録
+    const { error } = await supabase.from('thread_comments').upsert({
+      thread_hash,
+      sender_pubkey
+    }, { onConflict: 'thread_hash,sender_pubkey' });
 
-  const { error } = await supabase.from('thread_comments').insert({
-    thread_hash,
-    sender_pubkey
-  });
+    if (error) throw error;
 
-  res.status(error ? 500 : 200).json(error || { success: true });
-};
+    res.status(200).json({ status: 'ok', thread_hash });
+  } catch (err) {
+    console.error('save-comment error:', err);
+    res.status(500).json({ error: err.message });
+  }
+}
