@@ -7,13 +7,11 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANO
 const THREAD_POST_ADDRESS = 'NB2TFCNBOXNG6FU2JZ7IA3SLYOYZ24BBZAUPAOA';
 
 module.exports = async (req, res) => {
-  // --- CORS ---
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // --- タイムアウト設定（15秒）---
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 15000);
 
@@ -24,7 +22,7 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // --- チェーン高さ取得 ---
+    // --- チェーン高さ ---
     const infoRes = await fetch(`${NODE}/chain/info`, { signal: controller.signal });
     if (!infoRes.ok) throw new Error('Chain info failed');
     const { height: currentHeight } = await infoRes.json();
@@ -34,11 +32,8 @@ module.exports = async (req, res) => {
       return res.status(200).json({ status: 'no new blocks', checked: currentHeight });
     }
 
-    // --- 最新10件取得 ---
-    const params = new URLSearchParams({
-      pageSize: '10',
-      order: 'desc'
-    });
+    // --- 最新10件のトランザクション ---
+    const params = new URLSearchParams({ pageSize: '10', order: 'desc' });
     const txUrl = `${NODE}/transactions/confirmed?${params}`;
     console.log('🔍 Fetching:', txUrl);
 
@@ -50,6 +45,7 @@ module.exports = async (req, res) => {
       return res.status(200).json({ status: 'no txs found', checked: currentHeight });
     }
 
+    const results = [];
     const promises = txs
       .filter(tx => tx.meta.height > lastCheckedHeight && tx.transaction.message)
       .map(async (tx) => {
@@ -60,12 +56,12 @@ module.exports = async (req, res) => {
         const recipient = tx.transaction.recipientAddress;
 
         if (!message) return;
-        if (await isAlreadyNotified(fullHash)) return; // 重複通知防止
+        if (await isAlreadyNotified(fullHash)) return;
 
         try {
           // === 🆕 新スレッド ===
           if (recipient === THREAD_POST_ADDRESS && !message.startsWith('#')) {
-            console.log('🆕 新スレッド:', message);
+            console.log('🧩 新スレッド検出:', message);
             await supabase.from('threads').upsert({
               hash: shortHash,
               full_hash: fullHash,
@@ -73,17 +69,17 @@ module.exports = async (req, res) => {
               title: message,
             }, { onConflict: 'hash' });
 
-            await notifyAllUsersNewThread(message, fullHash);
-            await markAsNotified(fullHash, 'thread');
+            const ok = await notifyAllUsersNewThread(message, fullHash);
+            await markAsNotified(fullHash, ok ? 'thread' : 'thread_error');
+            results.push({ type: 'thread', title: message, ok });
           }
 
           // === 💬 コメント ===
           else if (message.startsWith('#') && message.length > 7) {
-            const tag = message.split(' ')[0]; // 例: "#A1234"
-            const shortTargetHash = tag.substring(1, 6); // A1234
+            const tag = message.split(' ')[0];
+            const shortTargetHash = tag.substring(1, 6);
             const comment = message.slice(tag.length + 1).trim();
 
-            // 対応するスレッドを探す
             const { data: thread } = await supabase
               .from('threads')
               .select('owner_pubkey, full_hash, title')
@@ -97,8 +93,15 @@ module.exports = async (req, res) => {
                 sender_pubkey: senderPubkey
               }, { onConflict: 'thread_hash,sender_pubkey' });
 
-              await notifyThreadParticipants(thread.owner_pubkey, thread.full_hash, thread.title, comment, senderPubkey);
-              await markAsNotified(fullHash, 'comment');
+              const ok = await notifyThreadParticipants(
+                thread.owner_pubkey,
+                thread.full_hash,
+                thread.title,
+                comment,
+                senderPubkey
+              );
+              await markAsNotified(fullHash, ok ? 'comment' : 'comment_error');
+              results.push({ type: 'comment', comment, ok });
             }
           }
         } catch (err) {
@@ -109,7 +112,7 @@ module.exports = async (req, res) => {
     await Promise.all(promises);
     lastCheckedHeight = currentHeight;
 
-    res.status(200).json({ status: 'success', checked: currentHeight });
+    res.status(200).json({ status: 'success', checked: currentHeight, results });
   } catch (error) {
     clearTimeout(timeoutId);
     console.error('Monitor error:', error);
@@ -121,63 +124,96 @@ module.exports = async (req, res) => {
 
 // 🆕 新スレッド通知（タイトル＋リンク付き）
 async function notifyAllUsersNewThread(title, fullHash) {
-  const { data: users } = await supabase.from('user_notifications').select('line_user_id');
-  const link = `https://xym-thread.com/thread.html?id=${fullHash}`;
-  const message = `🆕 新しいスレッドが投稿されました！\n「${title}」\n👉 ${link}`;
-  await Promise.all(
-    (users || []).map(u => u.line_user_id && sendLine(u.line_user_id, message))
-  );
+  try {
+    const { data: users, error } = await supabase.from('user_notifications').select('line_user_id');
+    if (error) throw error;
+    if (!users || users.length === 0) {
+      console.warn('⚠️ 通知対象ユーザーなし');
+      return false;
+    }
+
+    const link = `https://xym-thread.com/thread.html?id=${fullHash}`;
+    const message = `🆕 新しいスレッドが投稿されました！\n「${title}」\n👉 ${link}`;
+
+    const results = await Promise.all(
+      users.map(u => u.line_user_id && sendLine(u.line_user_id, message))
+    );
+    const successCount = results.filter(r => r).length;
+    console.log(`✅ 新スレッド通知: ${successCount}/${users.length} 件成功`);
+    return successCount > 0;
+  } catch (err) {
+    console.error('notifyAllUsersNewThread error:', err);
+    return false;
+  }
 }
 
 // 💬 コメント通知（スレッドタイトル＋コメント＋リンク付き）
 async function notifyThreadParticipants(ownerPubkey, fullHash, title, comment, senderPubkey) {
-  const shortHash = fullHash.substring(0, 5);
-  const { data: commenters } = await supabase
-    .from('thread_comments')
-    .select('sender_pubkey')
-    .eq('thread_hash', shortHash);
+  try {
+    const shortHash = fullHash.substring(0, 5);
+    const { data: commenters } = await supabase
+      .from('thread_comments')
+      .select('sender_pubkey')
+      .eq('thread_hash', shortHash);
 
-  const pubkeys = [ownerPubkey, senderPubkey, ...(commenters?.map(c => c.sender_pubkey) || [])];
-  const uniquePubkeys = [...new Set(pubkeys)];
+    const pubkeys = [ownerPubkey, senderPubkey, ...(commenters?.map(c => c.sender_pubkey) || [])];
+    const uniquePubkeys = [...new Set(pubkeys)];
 
-  const link = `https://xym-thread.com/thread.html?id=${fullHash}`;
-  const message = `💬 「${title}」に新しいコメントが届きました！\n「${comment}」\n👉 ${link}`;
+    const link = `https://xym-thread.com/thread.html?id=${fullHash}`;
+    const message = `💬 「${title}」に新しいコメントが届きました！\n「${comment}」\n👉 ${link}`;
 
-  await Promise.all(
-    uniquePubkeys.map(async (pubkey) => {
-      const { data: user } = await supabase
-        .from('user_notifications')
-        .select('line_user_id')
-        .eq('pubkey', pubkey)
-        .single();
-      if (user?.line_user_id) {
-        await sendLine(user.line_user_id, message);
-      }
-    })
-  );
+    const results = await Promise.all(
+      uniquePubkeys.map(async (pubkey) => {
+        const { data: user } = await supabase
+          .from('user_notifications')
+          .select('line_user_id')
+          .eq('pubkey', pubkey)
+          .single();
+        if (user?.line_user_id) return await sendLine(user.line_user_id, message);
+        return false;
+      })
+    );
+    const successCount = results.filter(r => r).length;
+    console.log(`💬 コメント通知: ${successCount}/${uniquePubkeys.length} 件成功`);
+    return successCount > 0;
+  } catch (err) {
+    console.error('notifyThreadParticipants error:', err);
+    return false;
+  }
 }
 
 // === LINE通知送信 ===
 async function sendLine(to, text) {
   try {
+    const payload = {
+      to,
+      messages: [{ type: 'text', text }]
+    };
+
     const res = await fetch('https://api.line.me/v2/bot/message/push', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/json; charset=UTF-8'
       },
-      body: JSON.stringify({
-        to,
-        messages: [{ type: 'text', text }]
-      })
+      body: JSON.stringify(payload)
     });
-    if (!res.ok) console.error('LINE送信失敗:', await res.text());
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`❌ LINE送信失敗 (${to}):`, errText);
+      return false;
+    }
+
+    console.log(`📩 LINE送信成功 → ${to}`);
+    return true;
   } catch (err) {
-    console.error('LINE送信エラー:', err);
+    console.error(`🚨 LINE送信エラー (${to}):`, err);
+    return false;
   }
 }
 
-// === 🧠 通知履歴管理 ===
+// === 🧠 通知履歴 ===
 async function isAlreadyNotified(fullHash) {
   const { data } = await supabase
     .from('notified_txs')
