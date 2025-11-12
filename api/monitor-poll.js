@@ -188,7 +188,7 @@ async function markAsNotified(fullHash, type) {
 
 // === 🌐 ノード選択 ===
 async function getAvailableNode() {
-  const fixedNode = 'https://sym-main.opening-line.jp:3001';
+  const fixedNode = 'https://symbol-mikun.net:3001';
   const NodesUrl = 'https://mainnet.dusanjp.com:3004/nodes?filter=suggested&limit=1000&ssl=true';
 
   try {
