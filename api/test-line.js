@@ -1,4 +1,4 @@
-// api/test-line.js
+// api/test-line.js（修正版）
 const { createClient } = require('@supabase/supabase-js');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
@@ -13,12 +13,15 @@ module.exports = async (req, res) => {
       return res.status(200).json({ error: 'No users registered' });
     }
 
-    const testText = '🔔 XYM Thread テスト通知！\nhttps://xym-thread.com';
+    const testText = 'XYM Thread テスト通知！\nhttps://xym-thread.com';
     let sent = 0;
+    const errors = [];
 
     for (const user of users) {
       if (user.line_user_id) {
         try {
+          console.log('Sending to LINE User ID:', user.line_user_id); // ログ追加
+
           const response = await fetch('https://api.line.me/v2/bot/message/push', {
             method: 'POST',
             headers: {
@@ -30,15 +33,25 @@ module.exports = async (req, res) => {
               messages: [{ type: 'text', text: testText }]
             })
           });
-          if (response.ok) sent++;
+
+          if (response.ok) {
+            sent++;
+            console.log('LINE sent successfully');
+          } else {
+            const errText = await response.text();
+            console.error('LINE API Error:', response.status, errText);
+            errors.push({ user: user.line_user_id, status: response.status, error: errText });
+          }
         } catch (err) {
-          console.error('LINE error:', err);
+          console.error('LINE fetch error:', err.message);
+          errors.push({ user: user.line_user_id, error: err.message });
         }
       }
     }
 
-    res.status(200).json({ sent, total: users.length });
+    res.status(200).json({ sent, total: users.length, errors });
   } catch (err) {
+    console.error('Server error:', err);
     res.status(500).json({ error: err.message });
   }
 };
