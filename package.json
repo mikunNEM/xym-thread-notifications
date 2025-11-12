@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vercel dev"
   },
+  "type": "module",
   "dependencies": {
     "symbol-sdk": "^3.3.0",
     "@sendgrid/mail": "^8.1.3",
