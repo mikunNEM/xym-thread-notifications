@@ -54,7 +54,7 @@ module.exports = async (req, res) => {
       const canvas = document.getElementById('qrcode');
       if (!canvas) return;
 
-      const liffUrl = 'https://liff.line.me/${LIFF_ID}';
+      const liffUrl = 'https://miniapp.line.me/${LIFF_ID}';
       QRCode.toCanvas(canvas, liffUrl, {
         width: 220,
         margin: 2,
