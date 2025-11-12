@@ -37,11 +37,16 @@ module.exports = async (req, res) => {
       order: 'desc'
     });
 
-    const txRes = await fetch(`${NODE}/transactions/confirmed?${params}`, { signal: controller.signal });
-    if (!txRes.ok) throw new Error('Tx fetch failed');
+    const txUrl = `${NODE}/transactions/confirmed?${params}`;
+    console.log("🔍 Fetching:", txUrl);
+    const txRes = await fetch(txUrl, { signal: controller.signal });
+    if (!txRes.ok) {
+      const errText = await txRes.text();
+      throw new Error(`Tx fetch failed: ${errText}`);
+    }
+
     const { data: txs } = await txRes.json();
 
-    // --- トランザクション処理 ---
     const promises = txs
       .filter(tx => tx.meta.height > lastCheckedHeight && tx.transaction.message)
       .map(async (tx) => {
@@ -56,7 +61,7 @@ module.exports = async (req, res) => {
         if (!message.trim()) return;
 
         try {
-          // === 🟢 新スレッド ===
+          // === 🆕 新スレッド ===
           if (!message.includes('#')) {
             await supabase.from('threads').upsert({
               hash: shortHash,
@@ -68,6 +73,7 @@ module.exports = async (req, res) => {
             await notifyAllUsersNewThread(message.trim(), fullHash);
             await markAsNotified(fullHash, 'thread');
           }
+
           // === 💬 コメント ===
           else if (message.startsWith('#') && message.length > 7) {
             const tag = message.split(' ')[0];
@@ -108,14 +114,19 @@ module.exports = async (req, res) => {
 };
 
 // === 🔔 通知関数 ===
+
+// 🆕 新スレッド通知（タイトル＋リンク付き）
 async function notifyAllUsersNewThread(title, fullHash) {
   const { data: users } = await supabase.from('user_notifications').select('line_user_id');
   const link = `https://xym-thread.com/thread.html?id=${fullHash}`;
+  const message = `🆕 新しいスレッドが投稿されました！\n「${title}」\n👉 ${link}`;
+
   await Promise.all(
-    (users || []).map(u => u.line_user_id && sendLine(u.line_user_id, `🆕 新スレッド！\n${title}`, link))
+    (users || []).map(u => u.line_user_id && sendLine(u.line_user_id, message))
   );
 }
 
+// 💬 コメント通知（コメント内容＋リンク付き）
 async function notifyThreadParticipants(ownerPubkey, fullHash, comment, senderPubkey) {
   const shortHash = fullHash.substring(0, 5);
   const { data: commenters } = await supabase
@@ -127,6 +138,8 @@ async function notifyThreadParticipants(ownerPubkey, fullHash, comment, senderPu
   const uniquePubkeys = [...new Set(pubkeys)];
 
   const link = `https://xym-thread.com/thread.html?id=${fullHash}`;
+  const message = `💬 新しいコメントが届きました！\n「${comment}」\n👉 ${link}`;
+
   await Promise.all(
     uniquePubkeys.map(async (pubkey) => {
       const { data: user } = await supabase
@@ -135,13 +148,13 @@ async function notifyThreadParticipants(ownerPubkey, fullHash, comment, senderPu
         .eq('pubkey', pubkey)
         .single();
       if (user?.line_user_id) {
-        await sendLine(user.line_user_id, `💬 新着コメント！\n${comment}`, link);
+        await sendLine(user.line_user_id, message);
       }
     })
   );
 }
 
-async function sendLine(to, text, link) {
+async function sendLine(to, text) {
   try {
     await fetch('https://api.line.me/v2/bot/message/push', {
       method: 'POST',
@@ -151,7 +164,7 @@ async function sendLine(to, text, link) {
       },
       body: JSON.stringify({
         to,
-        messages: [{ type: 'text', text: `${text}\n${link}` }]
+        messages: [{ type: 'text', text }]
       })
     });
   } catch (err) {
@@ -173,9 +186,9 @@ async function markAsNotified(fullHash, type) {
   await supabase.from('notified_txs').upsert({ tx_hash: fullHash, type });
 }
 
-// === 🛰️ ノード選択 ===
+// === 🌐 ノード選択 ===
 async function getAvailableNode() {
-  const fixedNode = 'https://symbol-mikun.net:3001';
+  const fixedNode = 'https://sym-main.opening-line.jp:3001';
   const NodesUrl = 'https://mainnet.dusanjp.com:3004/nodes?filter=suggested&limit=1000&ssl=true';
 
   try {
@@ -188,7 +201,7 @@ async function getAvailableNode() {
 
       availableNodes.sort((a, b) => b.apiStatus.chainHeight - a.apiStatus.chainHeight);
       const selectedNode = availableNodes[0].apiStatus.restGatewayUrl;
-      console.log("🟢 Using node:", selectedNode);
+      console.log("🟢 使用ノード:", selectedNode);
       return selectedNode;
     }
   } catch (error) {
