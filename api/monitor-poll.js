@@ -1,13 +1,15 @@
 // api/monitor-poll.js
 let lastCheckedHeight = 0;
 const { createClient } = require('@supabase/supabase-js');
+const sdk = require('symbol-sdk');
+const { SymbolFacade, Address } = sdk.symbol;
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-// スレッド投稿用アドレス
+// 🧩 スレッド投稿専用アドレス
 const THREAD_POST_ADDRESS = 'NB2TFCNBOXNG6FU2JZ7IA3SLYOYZ24BBZAUPAOA';
 
 module.exports = async (req, res) => {
-  // --- CORS ---
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -23,10 +25,6 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // --- Symbol SDK v3 読み込み ---
-    const sdk = await import('https://www.unpkg.com/symbol-sdk@3.3.0/dist/bundle.web.js');
-    const { Address } = sdk.symbol;
-
     // --- チェーン高さ ---
     const infoRes = await fetch(`${NODE}/chain/info`, { signal: controller.signal });
     if (!infoRes.ok) throw new Error('Chain info failed');
@@ -37,20 +35,19 @@ module.exports = async (req, res) => {
       return res.status(200).json({ status: 'no new blocks', checked: currentHeight });
     }
 
-    // --- 最新50件取得 ---
+    // --- 最新50件のトランザクション ---
     const params = new URLSearchParams({ pageSize: '50', order: 'desc' });
     const txUrl = `${NODE}/transactions/confirmed?${params}`;
     console.log('🔍 Fetching:', txUrl);
+
     const txRes = await fetch(txUrl, { signal: controller.signal });
     if (!txRes.ok) throw new Error(`Tx fetch failed: ${await txRes.text()}`);
     const { data: txs } = await txRes.json();
-
     if (!txs || txs.length === 0) {
       return res.status(200).json({ status: 'no txs found', checked: currentHeight });
     }
 
     const results = [];
-
     const tasks = txs.map(async (tx) => {
       const fullHash = tx.meta.hash;
       const senderPubkey = tx.transaction.signerPublicKey;
@@ -66,15 +63,13 @@ module.exports = async (req, res) => {
         return;
       }
 
-      // メッセージ本文（Hex → UTF-8）
       const message = hexToUtf8(msgObj.payload).trim();
       if (!message) return;
 
-      // 重複通知チェック
       if (await isAlreadyNotified(fullHash)) return;
 
       try {
-        // --- 新スレッド ---
+        // === 🆕 新スレッド ===
         if (recipientBase32 === THREAD_POST_ADDRESS && !message.startsWith('#')) {
           const shortHash = fullHash.substring(0, 5);
           console.log(`🧩 新スレッド検出: ${message}`);
@@ -83,7 +78,7 @@ module.exports = async (req, res) => {
             hash: shortHash,
             full_hash: fullHash,
             owner_pubkey: senderPubkey,
-            title: message
+            title: message,
           }, { onConflict: 'hash' });
 
           const ok = await notifyAllUsersNewThread(message, fullHash);
@@ -91,7 +86,7 @@ module.exports = async (req, res) => {
           results.push({ type: 'thread', ok, title: message });
         }
 
-        // --- コメント ---
+        // === 💬 コメント ===
         else if (message.startsWith('#') && message.length > 7) {
           const tag = message.split(' ')[0];
           const shortTarget = tag.substring(1, 6);
@@ -129,19 +124,20 @@ module.exports = async (req, res) => {
 
     await Promise.all(tasks);
     lastCheckedHeight = currentHeight;
-    return res.status(200).json({ status: 'success', checked: currentHeight, results });
+
+    res.status(200).json({ status: 'success', checked: currentHeight, results });
   } catch (error) {
     clearTimeout(timeoutId);
     console.error('Monitor error:', error);
-    return res.status(200).json({ status: 'error', error: error.message, checked: lastCheckedHeight });
+    res.status(200).json({ status: 'error', error: error.message, checked: lastCheckedHeight });
   }
 };
 
 /* ============================
-   通知関数
+   🔔 通知関連
 ============================ */
 
-// 新スレッド
+// 新スレッド通知
 async function notifyAllUsersNewThread(title, fullHash) {
   try {
     const { data: users } = await supabase.from('user_notifications').select('line_user_id');
@@ -194,7 +190,7 @@ async function notifyThreadParticipants(ownerPubkey, fullHash, title, comment, s
   }
 }
 
-// LINE送信
+// LINE通知送信
 async function sendLine(to, text) {
   try {
     const res = await fetch('https://api.line.me/v2/bot/message/push', {
@@ -214,7 +210,7 @@ async function sendLine(to, text) {
 }
 
 /* ============================
-   通知履歴
+   🧠 通知履歴
 ============================ */
 async function isAlreadyNotified(fullHash) {
   const { data } = await supabase
@@ -233,7 +229,7 @@ async function markAsNotified(fullHash, type) {
 }
 
 /* ============================
-   ノード選択
+   🌐 ノード選択
 ============================ */
 async function getAvailableNode() {
     const fixedNode = 'https://symbol-mikun.net:3001'; // 固定ノード
@@ -283,6 +279,7 @@ async function getAvailableNode() {
 
     return null; // どのノードも使えなかった場合
 }
+
 /* ============================
    HEX → UTF8
 ============================ */
