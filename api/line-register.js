@@ -10,7 +10,7 @@ module.exports = async (req, res) => {
 
   const LIFF_ID = process.env.LIFF_ID;
   if (!LIFF_ID) {
-    return res.status(500).send('LIFF_ID not set');
+    return res.status(500).send('<h1>LIFF_ID not set</h1>');
   }
 
   const html = `
@@ -20,6 +20,8 @@ module.exports = async (req, res) => {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LINE通知登録 - XYM Thread</title>
+  <!-- QRコードライブラリ（headで先読み込み） -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.0/build/qrcode.min.js"></script>
   <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
     body { font-family: 'Helvetica Neue', Arial, sans-serif; text-align: center; padding: 40px 20px; background: #f7f7f7; color: #333; }
@@ -39,7 +41,7 @@ module.exports = async (req, res) => {
   <div class="container">
     <h2>LINE通知登録</h2>
     <p>以下のQRコードを<br><strong>LINEアプリでスキャン</strong>してください</p>
-    <canvas id="qrcode" width="200" height="200"></canvas>
+    <canvas id="qrcode" width="220" height="220"></canvas>
     <p id="status" class="loading">読み込み中...</p>
     <div class="pubkey-input" id="pubkeyInput">
       <input type="text" placeholder="Symbol公開鍵（64文字）を入力" id="pubkeyField" maxlength="64">
@@ -47,15 +49,20 @@ module.exports = async (req, res) => {
   </div>
 
   <script>
-    // QRコード生成（canvas 直接）
-    const liffUrl = 'https://liff.line.me/${LIFF_ID}';
-    QRCode.toCanvas(document.getElementById('qrcode'), liffUrl, {
-      width: 200,
-      margin: 2,
-      color: { dark: '#00B900', light: '#ffffff' }
-    }).catch(err => {
-      console.error('QRCode error:', err);
-      document.getElementById('status').innerHTML = '<span class="error">QRコード生成エラー</span>';
+    // ライブラリ読み込み後にQR生成
+    window.addEventListener('load', () => {
+      const canvas = document.getElementById('qrcode');
+      if (!canvas) return;
+
+      const liffUrl = 'https://liff.line.me/${LIFF_ID}';
+      QRCode.toCanvas(canvas, liffUrl, {
+        width: 220,
+        margin: 2,
+        color: { dark: '#00B900', light: '#ffffff' }
+      }).catch(err => {
+        console.error('QR生成エラー:', err);
+        document.getElementById('status').innerHTML = '<span class="error">QRコード生成失敗</span>';
+      });
     });
 
     // LIFF初期化
@@ -70,29 +77,26 @@ module.exports = async (req, res) => {
         const urlPubkey = urlParams.get('pubkey');
 
         if (!liff.isLoggedIn()) {
-          statusEl.innerHTML = 'LINEログインが必要です...<br><small>ログイン後、再度お試しください</small>';
+          statusEl.innerHTML = 'LINEログインが必要です...<br><small>ログイン後、再度スキャンしてください</small>';
           liff.login();
           return;
         }
 
-        // User ID取得
         const context = liff.getContext();
-        if (!context || !context.userId) {
+        if (!context?.userId) {
           statusEl.innerHTML = '<span class="error">User ID取得失敗</span>';
           return;
         }
 
         const userId = context.userId;
-        statusEl.innerHTML = 'User ID取得完了！<br>公開鍵を入力してください';
+        statusEl.innerHTML = 'User ID取得完了！';
 
-        // 公開鍵入力 or URLから取得
+        // 公開鍵チェック
         let pubkey = urlPubkey;
         if (!pubkey || pubkey.length !== 64 || !/^[0-9A-Fa-f]{64}$/.test(pubkey)) {
           pubkeyInput.style.display = 'block';
+          statusEl.innerHTML = '公開鍵を入力してください（64文字）';
           pubkeyField.focus();
-          statusEl.innerHTML = '公開鍵を入力してください（64文字の16進数）';
-
-          // Enterキー対応
           pubkeyField.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') register(pubkeyField.value.trim());
           });
@@ -103,16 +107,16 @@ module.exports = async (req, res) => {
         await register(pubkey);
       })
       .catch(err => {
-        console.error('LIFF init error:', err);
+        console.error('LIFFエラー:', err);
         document.getElementById('status').innerHTML = 
-          '<span class="error">LIFFエラー: ' + (err.message || err.code || err) + '</span>';
+          '<span class="error">LIFFエラー: ' + (err.message || '初期化失敗') + '</span>';
       });
 
-    // 登録処理
+    // 登録関数
     async function register(pubkey) {
       const statusEl = document.getElementById('status');
       if (!pubkey || pubkey.length !== 64 || !/^[0-9A-Fa-f]{64}$/.test(pubkey)) {
-        statusEl.innerHTML = '<span class="error">無効な公開鍵です（64文字の16進数）</span>';
+        statusEl.innerHTML = '<span class="error">無効な公開鍵です</span>';
         return;
       }
 
@@ -127,13 +131,11 @@ module.exports = async (req, res) => {
 
         if (data.success) {
           statusEl.innerHTML = '<span class="success">登録完了！<br>LINE通知が届きます</span>';
-          // 5秒後に閉じる
           setTimeout(() => window.close(), 5000);
         } else {
-          statusEl.innerHTML = '<span class="error">登録失敗: ' + (data.error || '不明なエラー') + '</span>';
+          statusEl.innerHTML = '<span class="error">登録失敗: ' + (data.error || '不明') + '</span>';
         }
       } catch (err) {
-        console.error('Register error:', err);
         statusEl.innerHTML = '<span class="error">通信エラー</span>';
       }
     }
