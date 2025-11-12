@@ -1,11 +1,16 @@
 // api/monitor-poll.js
 import { createClient } from '@supabase/supabase-js';
-import { SymbolFacade, Address } from 'symbol-sdk/symbol';
+import { SymbolFacade } from 'symbol-sdk/symbol';
 
 let lastCheckedHeight = 0;
+
+// === Supabase 接続 ===
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
-// 🧩 スレッド投稿専用アドレス
+// === Symbol facade ===
+const facade = new SymbolFacade('mainnet');
+
+// === スレッド投稿専用アドレス ===
 const THREAD_POST_ADDRESS = 'NB2TFCNBOXNG6FU2JZ7IA3SLYOYZ24BBZAUPAOA';
 
 export default async function handler(req, res) {
@@ -24,7 +29,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // --- チェーン高さ ---
+    // === チェーン高さ取得 ===
     const infoRes = await fetch(`${NODE}/chain/info`, { signal: controller.signal });
     if (!infoRes.ok) throw new Error('Chain info failed');
     const { height: currentHeight } = await infoRes.json();
@@ -34,6 +39,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'no new blocks', checked: currentHeight });
     }
 
+    // === 最新50件取得 ===
     const params = new URLSearchParams({ pageSize: '50', order: 'desc' });
     const txUrl = `${NODE}/transactions/confirmed?${params}`;
     console.log('🔍 Fetching:', txUrl);
@@ -41,37 +47,48 @@ export default async function handler(req, res) {
     const txRes = await fetch(txUrl, { signal: controller.signal });
     if (!txRes.ok) throw new Error(`Tx fetch failed: ${await txRes.text()}`);
     const { data: txs } = await txRes.json();
-    if (!txs?.length) return res.status(200).json({ status: 'no txs found', checked: currentHeight });
+    if (!txs?.length) {
+      return res.status(200).json({ status: 'no txs found', checked: currentHeight });
+    }
 
     const results = [];
     const tasks = txs.map(async (tx) => {
       const fullHash = tx.meta.hash;
-      const senderPubkey = tx.transaction.signerPublicKey;
-      const recipientRaw = tx.transaction.recipientAddress;
-      const recipientBase32 = Address.createFromEncoded(recipientRaw).plain();
+      const signerPubkey = tx.transaction.signerPublicKey;
 
-      const msgObj = tx.transaction.message;
-      if (!msgObj) return;
-      if (msgObj.type !== 0) return; // 暗号化メッセージはスキップ
+      // v3では recipientAddress がエンコード形式の場合があるため安全変換
+      const recipientAddress = tx.transaction.recipientAddress?.address || tx.transaction.recipientAddress;
+      const messageObj = tx.transaction.message;
 
-      const message = hexToUtf8(msgObj.payload).trim();
-      if (!message || await isAlreadyNotified(fullHash)) return;
+      if (!messageObj) return;
+      if (messageObj.type !== 0) return; // 暗号化メッセージはスキップ
+
+      const message = hexToUtf8(messageObj.payload).trim();
+      if (!message) return;
+
+      if (await isAlreadyNotified(fullHash)) return;
+
+      // 送信者のアドレス（Symbol v3仕様）
+      const senderAddress = facade.network.publicKeyToAddress(signerPubkey).toString();
 
       try {
         // === 🆕 新スレッド ===
-        if (recipientBase32 === THREAD_POST_ADDRESS && !message.startsWith('#')) {
+        if (recipientAddress === THREAD_POST_ADDRESS && !message.startsWith('#')) {
           const shortHash = fullHash.substring(0, 5);
+          console.log(`🧩 新スレッド検出: ${message}`);
+
           await supabase.from('threads').upsert({
             hash: shortHash,
             full_hash: fullHash,
-            owner_pubkey: senderPubkey,
-            title: message,
+            owner_pubkey: signerPubkey,
+            title: message
           }, { onConflict: 'hash' });
 
           const ok = await notifyAllUsersNewThread(message, fullHash);
           await markAsNotified(fullHash, ok ? 'thread' : 'thread_error');
           results.push({ type: 'thread', ok, title: message });
         }
+
         // === 💬 コメント ===
         else if (message.startsWith('#') && message.length > 7) {
           const tag = message.split(' ')[0];
@@ -85,9 +102,11 @@ export default async function handler(req, res) {
             .single();
 
           if (thread) {
+            console.log(`💬 コメント検出: ${comment}`);
+
             await supabase.from('thread_comments').upsert({
               thread_hash: shortTarget,
-              sender_pubkey: senderPubkey
+              sender_pubkey: signerPubkey
             }, { onConflict: 'thread_hash,sender_pubkey' });
 
             const ok = await notifyThreadParticipants(
@@ -95,7 +114,7 @@ export default async function handler(req, res) {
               thread.full_hash,
               thread.title,
               comment,
-              senderPubkey
+              signerPubkey
             );
             await markAsNotified(fullHash, ok ? 'comment' : 'comment_error');
             results.push({ type: 'comment', ok, comment });
@@ -108,6 +127,7 @@ export default async function handler(req, res) {
 
     await Promise.all(tasks);
     lastCheckedHeight = currentHeight;
+
     res.status(200).json({ status: 'success', checked: currentHeight, results });
   } catch (error) {
     clearTimeout(timeoutId);
@@ -116,15 +136,19 @@ export default async function handler(req, res) {
   }
 }
 
-/* === 通知処理など共通関数群 === */
+/* === 🔔 通知関数 === */
 async function notifyAllUsersNewThread(title, fullHash) {
   try {
     const { data: users } = await supabase.from('user_notifications').select('line_user_id');
     if (!users?.length) return false;
+
     const link = `https://xym-thread.com/thread.html?id=${fullHash}`;
     const msg = `🆕 新しいスレッドが投稿されました！\n「${title}」\n👉 ${link}`;
+
     const results = await Promise.all(users.map(u => sendLine(u.line_user_id, msg)));
-    return results.filter(Boolean).length > 0;
+    const okCount = results.filter(Boolean).length;
+    console.log(`✅ 新スレ通知: ${okCount}/${users.length}`);
+    return okCount > 0;
   } catch (e) {
     console.error('notifyAllUsersNewThread error:', e);
     return false;
@@ -155,13 +179,16 @@ async function notifyThreadParticipants(ownerPubkey, fullHash, title, comment, s
       return false;
     }));
 
-    return results.filter(Boolean).length > 0;
+    const okCount = results.filter(Boolean).length;
+    console.log(`💬 コメント通知: ${okCount}/${unique.length}`);
+    return okCount > 0;
   } catch (e) {
     console.error('notifyThreadParticipants error:', e);
     return false;
   }
 }
 
+/* === LINE通知 === */
 async function sendLine(to, text) {
   try {
     const res = await fetch('https://api.line.me/v2/bot/message/push', {
@@ -172,12 +199,15 @@ async function sendLine(to, text) {
       },
       body: JSON.stringify({ to, messages: [{ type: 'text', text }] })
     });
+    if (!res.ok) console.error(`LINE送信失敗 (${to}):`, await res.text());
     return res.ok;
-  } catch {
+  } catch (e) {
+    console.error('LINE送信エラー:', e);
     return false;
   }
 }
 
+/* === 通知履歴 === */
 async function isAlreadyNotified(fullHash) {
   const { data } = await supabase
     .from('notified_txs')
@@ -195,6 +225,7 @@ async function markAsNotified(fullHash, type) {
   });
 }
 
+/* === ノード選択 === */
 async function getAvailableNode() {
     const fixedNode = 'https://symbol-mikun.net:3001'; // 固定ノード
     const NodesUrl = 'https://mainnet.dusanjp.com:3004/nodes?filter=suggested&limit=1000&ssl=true';
@@ -244,6 +275,7 @@ async function getAvailableNode() {
     return null; // どのノードも使えなかった場合
 }
 
+/* === HEX → UTF8 === */
 function hexToUtf8(hex) {
   try {
     const bytes = new Uint8Array(hex.match(/.{1,2}/g).map(h => parseInt(h, 16)));
