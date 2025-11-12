@@ -55,6 +55,8 @@ module.exports = async (req, res) => {
         const senderPubkey = tx.transaction.signerPublicKey;
         const recipient = tx.transaction.recipientAddress;
 
+        console.log(`📄 TX: ${fullHash} | From: ${senderPubkey} | To: ${recipient} | Msg: ${message}`);
+
         if (!message) return;
         if (await isAlreadyNotified(fullHash)) return;
 
