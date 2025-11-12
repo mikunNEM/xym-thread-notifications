@@ -6,7 +6,7 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-  const LIFF_ID = process.env.LIFF_ID; // Vercel 環境変数
+  const LIFF_ID = process.env.LIFF_ID; // LINE Login チャネルのLIFF ID
 
   const html = `
 <!DOCTYPE html>
@@ -24,7 +24,7 @@ module.exports = async (req, res) => {
 </head>
 <body>
   <h2>LINE通知登録</h2>
-  <p>下のQRコードをLINEでスキャンしてください</p>
+  <p>QRコードをLINEでスキャンして登録してください</p>
   <div id="qrcode"></div>
   <p id="status">読み込み中...</p>
 
@@ -33,15 +33,20 @@ module.exports = async (req, res) => {
     const liffUrl = 'https://liff.line.me/${LIFF_ID}';
     QRCode.toCanvas(document.getElementById('qrcode'), liffUrl, { width: 200 });
 
-    // 自動登録（LIFFが開かれたら）
     liff.init({ liffId: '${LIFF_ID}' })
       .then(() => {
         if (!liff.isLoggedIn()) {
-          document.getElementById('status').innerText = 'ログインが必要です';
+          document.getElementById('status').innerText = 'LINEログインが必要です';
           liff.login();
         } else {
+          const profile = liff.getProfile();
           const userId = liff.getContext().userId;
-          const pubkey = new URLSearchParams(window.location.search).get('pubkey') || 'UNKNOWN';
+          const pubkey = new URLSearchParams(window.location.search).get('pubkey') || prompt('公開鍵 (64文字):');
+
+          if (!pubkey || pubkey.length !== 64) {
+            document.getElementById('status').innerText = '公開鍵を入力してください';
+            return;
+          }
 
           fetch('https://xym-thread-notifications.vercel.app/api/save-user', {
             method: 'POST',
@@ -51,7 +56,7 @@ module.exports = async (req, res) => {
           .then(r => r.json())
           .then(data => {
             document.getElementById('status').innerHTML = 
-              data.success ? '登録完了！<br>LINE通知が届きます' : 'エラー: ' + data.error;
+              data.success ? '登録完了！LINE通知が届きます' : 'エラー: ' + data.error;
           });
         }
       })
